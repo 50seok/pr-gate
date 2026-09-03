@@ -5,7 +5,7 @@
 import re
 import sys
 
-from review import FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, parse_review, render, render_too_big
+from review import FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, parse_review, redact_secrets, render, render_too_big
 
 
 def test_classify():
@@ -71,6 +71,21 @@ def test_review_env_allowlist_excludes_gh_token():
     """diff는 신뢰할 수 없는 입력이라, 리뷰 서브프로세스에 GH_TOKEN을 물려주면 안 된다."""
     assert "GH_TOKEN" not in _REVIEW_ENV_ALLOWLIST
     assert "PR_NUMBER" not in _REVIEW_ENV_ALLOWLIST
+
+
+def test_redact_secrets():
+    """리뷰 CLI가 프롬프트 인젝션으로 자기 인증 토큰을 findings에 담아냈다고 가정해도
+    공개 코멘트로 나가기 직전에 지워져야 한다 — 마지막 방어선."""
+    leaked = "발견: CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-your-key-here-0123456789"
+    out = redact_secrets(leaked)
+    assert "sk-ant-oat01" not in out
+    assert "[REDACTED]" in out
+
+    assert "ghp_" not in redact_secrets("ghp_test" + "a" * 25)
+    assert "AKIA" not in redact_secrets("AKIATESTVALUE" + "B" * 10)
+
+    clean = "일반 리뷰 텍스트, 토큰 없음"
+    assert redact_secrets(clean) == clean, "시크릿이 없으면 원문 그대로여야 함"
 
 
 def test_render_too_big():
