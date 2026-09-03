@@ -5,7 +5,7 @@
 import re
 import sys
 
-from review import FOLLOWUP_RE, classify, parse_review, render, render_too_big
+from review import FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, parse_review, render, render_too_big
 
 
 def test_classify():
@@ -55,6 +55,22 @@ def test_render():
 
     clean = render({"summary": "", "findings": []}, "small", "c", "0" * 40)
     assert "머지가 차단" not in clean, "P1이 없으면 차단 문구가 없어야 함"
+
+
+def test_render_escapes_pipe_and_newline():
+    """모델이 '|'나 개행이 든 텍스트를 뱉어도 마크다운 테이블이 깨지면 안 된다."""
+    review = {"summary": "", "findings": [{"grade": "P1", "file": "a|b.py", "line": 1,
+                                          "why": "행1|행2\n행3", "fix": "고침"}]}
+    body = render(review, "small", "c", "0" * 40)
+    table_lines = [l for l in body.splitlines() if l.startswith("| **P1**")]
+    assert len(table_lines) == 1, "이스케이프 안 된 '|'나 개행이 테이블 행을 쪼갬"
+    assert "\\|" in table_lines[0]
+
+
+def test_review_env_allowlist_excludes_gh_token():
+    """diff는 신뢰할 수 없는 입력이라, 리뷰 서브프로세스에 GH_TOKEN을 물려주면 안 된다."""
+    assert "GH_TOKEN" not in _REVIEW_ENV_ALLOWLIST
+    assert "PR_NUMBER" not in _REVIEW_ENV_ALLOWLIST
 
 
 def test_render_too_big():
