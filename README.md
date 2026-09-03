@@ -43,14 +43,27 @@ auto-merge가 한다. 봇에 머지 권한을 주지 않아도 되고 머지 로
 
 ## 설치
 
-1. **토큰 발급** — 로컬에서 `claude setup-token` (Claude 구독 필요)
-2. **레포 시크릿 등록** — `CLAUDE_CODE_OAUTH_TOKEN`
-3. **파일 복사** — `.github/workflows/pr-gate.yml`, `scripts/review.py`를 대상 레포에
-4. **레포 설정 2개**
-   - Settings → General → **Allow auto-merge** 켜기
-   - Settings → Branches → `dev` 보호 규칙에 `pr-gate / review`를 **required check**로 등록
+### 1회만 — 토큰 발급 (계정 단위, 레포 단위 아님)
 
-이후 PR에서 `gh pr merge --auto --squash`를 걸어두면 P1 없는 PR은 사람 손 없이 머지된다.
+```bash
+claude setup-token   # Claude 구독 필요. 나온 값을 로컬 셸에 보관해둔다.
+```
+
+이 토큰은 **여러 레포에 재사용**한다. 새 프로젝트마다 다시 받을 필요 없다.
+
+### 새 레포마다 — `install.py` 한 줄
+
+```bash
+$env:CLAUDE_CODE_OAUTH_TOKEN = "<발급받은 값>"     # PowerShell. 이 셸에서만 유효
+python scripts/install.py <owner>/<repo> --auto-merge --require-check
+```
+
+dev 브랜치 생성 → 워크플로우 파일 커밋 → 시크릿 등록 → (선택) auto-merge·required check까지
+로컬 클론 없이 한 번에 끝낸다. 토큰 값은 로컬 환경변수에서 읽어 `gh secret set`에 그대로
+넘길 뿐, 어디에도 출력하지 않는다.
+
+플래그 없이 실행하면 auto-merge/required check는 건너뛴다 — 처음엔 라벨만 관찰하고
+싶을 때. 나중에 다시 실행해서 켤 수 있다(멱등적).
 
 ## 다른 에이전트로 바꾸기
 
