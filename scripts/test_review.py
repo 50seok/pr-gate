@@ -5,7 +5,8 @@
 import re
 import sys
 
-from review import FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, parse_review, redact_secrets, render, render_too_big
+from review import (FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, is_sensitive, parse_review,
+                    redact_secrets, render, render_too_big)
 
 
 def test_classify():
@@ -55,6 +56,24 @@ def test_render():
 
     clean = render({"summary": "", "findings": []}, "small", "c", "0" * 40)
     assert "머지가 차단" not in clean, "P1이 없으면 차단 문구가 없어야 함"
+
+
+def test_is_sensitive():
+    assert is_sensitive(["src/auth/LoginController.java"])
+    assert is_sensitive(["db/migration/V2__add_col.sql"])
+    assert is_sensitive([".env.example"])
+    assert not is_sensitive(["src/PokemonService.java", "README.md"])
+
+
+def test_render_marks_sensitive_hold():
+    """민감 영역이면 P1이 0이어도 '사람이 머지하라'는 안내가 코멘트에 있어야 한다."""
+    clean = {"summary": "", "findings": []}
+    body = render(clean, "big", "c", "0" * 40, sensitive=True)
+    assert "민감 영역" in body
+    assert "P1 0" in body, "P1은 0인데도 보류 안내가 함께 떠야 함"
+
+    normal = render(clean, "small", "c", "0" * 40, sensitive=False)
+    assert "민감 영역" not in normal
 
 
 def test_render_escapes_pipe_and_newline():

@@ -24,6 +24,7 @@ MAX_DIFF_CHARS = 80000
 
 P1_LABEL = "ai:p1-blocked"
 P2_LABEL = "ai:p2-followup"
+HUMAN_LABEL = "ai:needs-human"
 
 
 # --- GitHub CLI 얇은 래퍼 (gh 는 Actions 러너에 기본 설치돼 있다) ---
@@ -39,11 +40,16 @@ def gh_json(args, stdin=None):
 
 
 # --- 티어 판정 ---
+def is_sensitive(files):
+    """인증·시크릿·DB 등 놓쳤을 때 비용이 큰 경로가 섞여 있나."""
+    return any(SENSITIVE_RE.search(f) for f in files)
+
+
 def classify(files, changed_lines):
     """files: 변경 파일 경로 목록 -> 'skip' | 'small' | 'big'"""
     if files and all(DOCS_ONLY_RE.search(f) for f in files):
         return "skip"
-    if any(SENSITIVE_RE.search(f) for f in files):
+    if is_sensitive(files):
         return "big"
     return "big" if changed_lines >= BIG_LINES else "small"
 
@@ -109,7 +115,7 @@ def _md_cell(s):
     return str(s).replace("|", "\\|").replace("\r\n", " ").replace("\n", "<br>")
 
 
-def render(review, tier, cmd, sha, followup=None):
+def render(review, tier, cmd, sha, followup=None, sensitive=False):
     counts = {g: sum(1 for f in review["findings"] if f["grade"] == g) for g in ("P1", "P2", "P3")}
     lines = [MARKER, "## 🤖 pr-gate 리뷰", ""]
     lines.append("**티어** `" + tier + "` · **명령** `" + cmd + "` · **커밋** `" + sha[:7] + "`")
@@ -126,6 +132,10 @@ def render(review, tier, cmd, sha, followup=None):
     lines.append("**P1 %d · P2 %d · P3 %d**" % (counts["P1"], counts["P2"], counts["P3"]))
     if counts["P1"]:
         lines += ["", "⛔ P1이 있어 머지가 차단됩니다. 고친 뒤 커밋을 올리면 다시 검수합니다."]
+    if sensitive:
+        lines += ["", "🔒 **민감 영역**(인증·시크릿·DB 등)이 포함돼 자동 머지를 보류합니다. "
+                      "AI 리뷰는 P1을 놓칠 수 있으므로, 이 영역은 통과 여부와 무관하게 "
+                      "**사람이 확인한 뒤 직접 머지**해 주세요."]
     if followup:
         lines += ["", "후속 이슈: #%d" % followup, "<!-- pr-gate-followup:%d -->" % followup]
     return "\n".join(lines)
@@ -187,14 +197,14 @@ def upsert_comment(repo, pr, body, existing):
 def ensure_labels(repo):
     """P1/P2 라벨이 레포에 없으면 만든다. create_followup()이 라벨을 참조하기 전에
     반드시 먼저 호출해야 한다 — 순서가 바뀌면 'label not found'로 이슈 생성이 실패한다."""
-    for name, color in ((P1_LABEL, "d73a4a"), (P2_LABEL, "fbca04")):
+    for name, color in ((P1_LABEL, "d73a4a"), (P2_LABEL, "fbca04"), (HUMAN_LABEL, "0075ca")):
         subprocess.run(["gh", "label", "create", name, "--color", color, "--force", "--repo", repo],
                        capture_output=True, text=True)
 
 
 def set_labels(repo, pr, want):
     """want 에 있는 라벨만 남긴다. 재실행으로 등급이 사라지면 라벨도 뗀다."""
-    for name in (P1_LABEL, P2_LABEL):
+    for name in (P1_LABEL, P2_LABEL, HUMAN_LABEL):
         flag = "--add-label" if name in want else "--remove-label"
         subprocess.run(["gh", "issue", "edit", str(pr), flag, name, "--repo", repo],
                        capture_output=True, text=True)
@@ -247,18 +257,26 @@ def main():
     if p2 and followup is None:
         followup = create_followup(repo, pr, p2)
 
-    upsert_comment(repo, pr, render(review, tier, cmd, sha, followup), existing)
+    # AI 리뷰는 P1을 놓칠 수 있다(이 봇이 자기 P1을 2라운드에 나눠 찾은 실측이 있다).
+    # 놓쳤을 때 비용이 큰 영역은 "AI 통과 = 머지"가 아니라 "AI 통과 = 사람 검토 대기"여야
+    # 한다. check를 실패시켜 auto-merge만 보류시키고, 사람은 그대로 직접 머지할 수 있다.
+    sensitive = is_sensitive(files)
+
+    upsert_comment(repo, pr, render(review, tier, cmd, sha, followup, sensitive), existing)
 
     want = set()
     if p1:
         want.add(P1_LABEL)
     if p2 or followup:
         want.add(P2_LABEL)
+    if sensitive:
+        want.add(HUMAN_LABEL)
     set_labels(repo, pr, want)
 
-    print("[pr-gate] P1 %d · P2 %d · P3 %d"
-          % (len(p1), len(p2), len(review["findings"]) - len(p1) - len(p2)))
-    return 1 if p1 else 0
+    print("[pr-gate] P1 %d · P2 %d · P3 %d%s"
+          % (len(p1), len(p2), len(review["findings"]) - len(p1) - len(p2),
+             " · 민감영역(사람 머지 대기)" if sensitive else ""))
+    return 1 if (p1 or sensitive) else 0
 
 
 if __name__ == "__main__":

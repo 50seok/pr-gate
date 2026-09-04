@@ -5,7 +5,10 @@ name: pr-gate
 # 네이티브 auto-merge가 required check 실패를 보고 알아서 머지를 보류한다.
 on:
   pull_request:
-    branches: [dev]
+    # dev 대상 PR뿐 아니라 dev->main 승격 PR도 검수한다. 승격 시점의 누적 diff는
+    # 개별 PR 어디서도 본 적 없는 조합이라, 각각 P1이 없어도 합치면 회귀가 날 수 있다.
+    # main에는 auto-merge를 켜지 않으므로 여기서 통과해도 머지는 사람이 한다.
+    branches: [dev, main]
     # 기본값(opened/synchronize/reopened)에 ready_for_review를 더한다 — 안 더하면
     # 초안 해제 시 리뷰가 안 돌고 다음 커밋이 올라올 때까지 기다리게 된다.
     types: [opened, synchronize, reopened, ready_for_review]

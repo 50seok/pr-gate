@@ -81,14 +81,18 @@ def enable_auto_merge(repo):
 
 def require_check(repo):
     # pr-gate.yml의 job 이름이 GitHub check 컨텍스트 이름이 된다.
+    # dev뿐 아니라 main에도 건다 — dev->main 승격 PR의 누적 diff를 검수 없이 통과시키지
+    # 않기 위해서. main은 auto-merge를 켜지 않으므로 통과해도 머지는 사람이 한다.
     payload = json.dumps({
         "required_status_checks": {"strict": True, "contexts": ["review"]},
         "enforce_admins": False,
         "required_pull_request_reviews": None,
         "restrictions": None,
     }).encode("utf-8")
-    gh("api", "-X", "PUT", "repos/%s/branches/dev/protection" % repo, "--input", "-", input_bytes=payload)
-    print("[install] dev 브랜치 required check 등록 (review)")
+    for branch in ("dev", "main"):
+        gh("api", "-X", "PUT", "repos/%s/branches/%s/protection" % (repo, branch),
+           "--input", "-", input_bytes=payload)
+        print("[install] %s 브랜치 required check 등록 (review)" % branch)
 
 
 def main():
