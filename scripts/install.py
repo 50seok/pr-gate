@@ -31,7 +31,11 @@ def gh(*args, input_bytes=None, check=True):
 
 def put_file(repo, branch, path, local_path):
     """Contents API로 파일을 커밋한다. 이미 있으면 sha를 조회해 갱신, 없으면 새로 생성."""
-    existing = gh("api", "repos/%s/contents/%s" % (repo, path), "-f", "ref=%s" % branch, check=False)
+    # gh api는 -f 필드를 주면 -X를 명시하지 않는 한 기본 메서드를 GET이 아니라 POST로
+    # 바꾼다 — 명시 안 하면 이 존재 확인이 늘 404로 오탐하고, PUT이 기존 파일의 sha를
+    # 못 받아 "sha wasn't supplied"로 실패한다(pokedex-rag 부착 때 실제로 겪음).
+    existing = gh("api", "-X", "GET", "repos/%s/contents/%s" % (repo, path),
+                  "-f", "ref=%s" % branch, check=False)
     sha = json.loads(existing.stdout).get("sha") if existing.returncode == 0 else None
 
     content_b64 = base64.b64encode(local_path.read_bytes()).decode("ascii")
