@@ -5,8 +5,23 @@
 import re
 import sys
 
-from review import (FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, is_sensitive, parse_review,
-                    redact_secrets, render, render_too_big)
+import json
+
+from review import (FOLLOWUP_RE, _REVIEW_ENV_ALLOWLIST, classify, format_usage, is_sensitive,
+                    parse_review, redact_secrets, render, render_too_big, split_wrapper)
+
+# claude -p --output-format json 의 실제 응답 스키마(2026-09-24 실측에서 필드명 확인).
+# result 안에 우리가 요청한 리뷰 JSON이 "문자열로" 들어오는 이중 구조가 핵심이다.
+REAL_WRAPPER = json.dumps({
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": '{"summary": "괜찮음", "findings": [{"grade": "P2", "file": "a.py", "line": 3,'
+              ' "why": "널 가능성", "fix": "가드 추가"}]}',
+    "total_cost_usd": 0.119535,
+    "usage": {"input_tokens": 9, "cache_creation_input_tokens": 59393,
+              "cache_read_input_tokens": 0, "output_tokens": 148},
+})
 
 
 def test_classify():
@@ -56,6 +71,51 @@ def test_render():
 
     clean = render({"summary": "", "findings": []}, "small", "c", "0" * 40)
     assert "머지가 차단" not in clean, "P1이 없으면 차단 문구가 없어야 함"
+
+
+def test_split_wrapper_claude():
+    """래퍼를 벗긴 본문이 그대로 parse_review에 들어가야 한다(이중 JSON 구조)."""
+    meta, body = split_wrapper(REAL_WRAPPER)
+    assert meta["usage"]["output_tokens"] == 148
+    assert meta["cost_usd"] == 0.119535
+    review = parse_review(body)
+    assert review["findings"][0]["grade"] == "P2", "래퍼 벗긴 뒤 본문 파싱까지 이어져야 함"
+
+
+def test_split_wrapper_passthrough():
+    """래퍼 없는 CLI(codex·grok)는 원문 그대로 통과 — 집계만 없고 리뷰는 돈다."""
+    plain = '{"summary": "s", "findings": []}'
+    meta, body = split_wrapper(plain)
+    assert meta is None, "result/usage 없는 JSON을 래퍼로 오인하면 본문을 잃는다"
+    assert body == plain
+    assert parse_review(body)["findings"] == []
+
+    meta, body = split_wrapper("JSON이 아닌 생 텍스트")
+    assert meta is None and body == "JSON이 아닌 생 텍스트"
+
+
+def test_format_usage():
+    assert format_usage(None) == ""
+    assert format_usage({}) == ""
+
+    line = format_usage({"usage": {"input_tokens": 1234, "output_tokens": 567,
+                                   "cache_creation_input_tokens": 8901,
+                                   "cache_read_input_tokens": 0},
+                         "cost_usd": 0.0321})
+    assert "입력 1,234" in line and "출력 567" in line
+    assert "캐시생성 8,901" in line
+    assert "캐시읽기" not in line, "0인 항목은 줄에서 빼서 노이즈를 줄인다"
+    assert "$0.0321" in line
+
+    # 벤더가 달라 키가 없어도 죽지 않아야 한다
+    assert format_usage({"usage": {}, "cost_usd": None}) == "입력 0 · 출력 0"
+
+
+def test_render_includes_usage():
+    review = {"summary": "", "findings": []}
+    meta = {"usage": {"input_tokens": 10, "output_tokens": 20}, "cost_usd": None}
+    assert "토큰 입력 10 · 출력 20" in render(review, "small", "c", "0" * 40, meta=meta)
+    assert "토큰" not in render(review, "small", "c", "0" * 40, meta=None), "집계 없으면 줄 자체가 없어야 함"
 
 
 def test_is_sensitive():

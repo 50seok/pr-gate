@@ -76,6 +76,44 @@ PROMPT = """당신은 코드 리뷰어입니다. 아래 PR diff를 검토하고 
 _FENCE_RE = re.compile(r"^```[a-z]*\n|\n```$", re.M)
 
 
+def split_wrapper(raw):
+    """CLI가 usage 메타를 감싼 래퍼 JSON을 냈으면 (메타, 본문)으로 분리한다.
+
+    claude CLI는 --output-format json 을 주면 {result, usage, total_cost_usd, ...}
+    형태로 감싸서 낸다. 다른 에이전트 CLI(codex·grok)는 래퍼가 없으므로 그때는
+    (None, 원문)을 돌려주고 그대로 진행한다 — 토큰 집계만 없을 뿐 리뷰는 돈다.
+    """
+    try:
+        outer = json.loads(raw)
+    except (ValueError, TypeError):
+        return None, raw
+    if isinstance(outer, dict) and "result" in outer and "usage" in outer:
+        meta = {"usage": outer["usage"] or {}, "cost_usd": outer.get("total_cost_usd")}
+        return meta, outer["result"] or ""
+    return None, raw
+
+
+def format_usage(meta):
+    """PR 코멘트·로그에 넣을 한 줄. 메타가 없으면 빈 문자열."""
+    if not meta:
+        return ""
+    u = meta.get("usage") or {}
+
+    def n(key):
+        return u.get(key) or 0
+
+    parts = ["입력 {:,}".format(n("input_tokens")), "출력 {:,}".format(n("output_tokens"))]
+    if n("cache_creation_input_tokens"):
+        parts.append("캐시생성 {:,}".format(n("cache_creation_input_tokens")))
+    if n("cache_read_input_tokens"):
+        parts.append("캐시읽기 {:,}".format(n("cache_read_input_tokens")))
+    cost = meta.get("cost_usd")
+    if cost:
+        # 구독 토큰으로 돌면 실제 청구가 아니라 종량 정가 환산값이다. 오해 없게 표기한다.
+        parts.append("종량환산 ${:.4f}".format(cost))
+    return " · ".join(parts)
+
+
 def parse_review(raw):
     """모델 출력에서 JSON만 뽑는다. 코드펜스나 앞뒤 잡담이 붙어도 견딘다."""
     text = _FENCE_RE.sub("", raw.strip())
@@ -105,7 +143,8 @@ def run_review(cmd, diff):
         # 일부 CLI는 에러를 stderr가 아니라 stdout에 낸다 — 둘 다 남겨야 원인을 알 수 있다.
         detail = (r.stderr.strip() or r.stdout.strip())[:500]
         raise RuntimeError("리뷰 명령 실패 (exit %d, %s): %s" % (r.returncode, cmd, detail))
-    return parse_review(r.stdout)
+    meta, body = split_wrapper(r.stdout)
+    return parse_review(body), meta
 
 
 # --- 코멘트 렌더링 ---
@@ -115,7 +154,7 @@ def _md_cell(s):
     return str(s).replace("|", "\\|").replace("\r\n", " ").replace("\n", "<br>")
 
 
-def render(review, tier, cmd, sha, followup=None, sensitive=False):
+def render(review, tier, cmd, sha, followup=None, sensitive=False, meta=None):
     counts = {g: sum(1 for f in review["findings"] if f["grade"] == g) for g in ("P1", "P2", "P3")}
     lines = [MARKER, "## 🤖 pr-gate 리뷰", ""]
     lines.append("**티어** `" + tier + "` · **명령** `" + cmd + "` · **커밋** `" + sha[:7] + "`")
@@ -138,6 +177,9 @@ def render(review, tier, cmd, sha, followup=None, sensitive=False):
                       "**사람이 확인한 뒤 직접 머지**해 주세요."]
     if followup:
         lines += ["", "후속 이슈: #%d" % followup, "<!-- pr-gate-followup:%d -->" % followup]
+    usage = format_usage(meta)
+    if usage:
+        lines += ["", "<sub>토큰 " + usage + "</sub>"]
     return "\n".join(lines)
 
 
@@ -247,7 +289,7 @@ def main():
         return 1
 
     cmd = os.environ["REVIEW_CMD_BIG" if tier == "big" else "REVIEW_CMD_SMALL"]
-    review = run_review(cmd, diff)
+    review, meta = run_review(cmd, diff)
 
     p1 = [f for f in review["findings"] if f["grade"] == "P1"]
     p2 = [f for f in review["findings"] if f["grade"] == "P2"]
@@ -262,7 +304,7 @@ def main():
     # 한다. check를 실패시켜 auto-merge만 보류시키고, 사람은 그대로 직접 머지할 수 있다.
     sensitive = is_sensitive(files)
 
-    upsert_comment(repo, pr, render(review, tier, cmd, sha, followup, sensitive), existing)
+    upsert_comment(repo, pr, render(review, tier, cmd, sha, followup, sensitive, meta), existing)
 
     want = set()
     if p1:
@@ -276,6 +318,9 @@ def main():
     print("[pr-gate] P1 %d · P2 %d · P3 %d%s"
           % (len(p1), len(p2), len(review["findings"]) - len(p1) - len(p2),
              " · 민감영역(사람 머지 대기)" if sensitive else ""))
+    # 로그에도 남긴다 — 나중에 `gh run view --log`로 긁어 프로젝트별 누적을 집계할 수 있다.
+    usage = format_usage(meta)
+    print("[pr-gate] 토큰 " + usage if usage else "[pr-gate] 토큰 집계 없음 (CLI가 usage를 안 냄)")
     return 1 if (p1 or sensitive) else 0
 
 

@@ -69,6 +69,8 @@ jobs:
           # ponytail: 읽기 도구만 허용해 리뷰어가 레포를 고치지 못하게 한다.
           #           -p 모드는 권한 프롬프트에 답할 수 없어 bypass가 필요한데,
           #           허용 도구가 읽기 전용이라 실질 위험이 없다.
-          REVIEW_CMD_SMALL: claude -p --model haiku --allowed-tools "Read,Grep,Glob" --permission-mode bypassPermissions
-          REVIEW_CMD_BIG: claude -p --model sonnet --allowed-tools "Read,Grep,Glob" --permission-mode bypassPermissions
+          #           --output-format json 은 토큰 집계를 받기 위한 것이다. 이걸 빼면
+          #           리뷰는 그대로 돌고 코멘트의 토큰 줄만 사라진다(집계는 선택 기능).
+          REVIEW_CMD_SMALL: claude -p --model haiku --output-format json --allowed-tools "Read,Grep,Glob" --permission-mode bypassPermissions
+          REVIEW_CMD_BIG: claude -p --model sonnet --output-format json --allowed-tools "Read,Grep,Glob" --permission-mode bypassPermissions
         run: python scripts/review.py
